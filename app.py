@@ -65,17 +65,16 @@ def prepare_sequences(data):
     X, y = [], []
     for i in range(len(scaled) - LOOKBACK):
         X.append(scaled[i:i+LOOKBACK])
-        y.append(scaled[i+LOOKBACK])
+        y.append(scaled[i+LOOKBACK][0])  # force scalar
 
     return (
         torch.tensor(np.array(X), dtype=torch.float32),
-        np.array(y),
+        np.array(y, dtype=float),
         scaler,
         scaled
     )
 
 def rolling_forecast(model, raw_data, scaler, steps):
-    model.eval()
     preds = []
     temp = raw_data.copy()
 
@@ -83,7 +82,7 @@ def rolling_forecast(model, raw_data, scaler, steps):
         seq = temp[-LOOKBACK:]
         seq_scaled = scaler.transform(seq)
         X = torch.tensor(seq_scaled).float().unsqueeze(0)
-        pred = model(X).item()
+        pred = float(model(X).item())  # force scalar
         preds.append(pred)
         temp = np.vstack([temp, [[pred]]])
 
@@ -97,16 +96,15 @@ def walk_forward_rmse(model, scaled_data):
             scaled_data[i-LOOKBACK:i].reshape(1, LOOKBACK, 1),
             dtype=torch.float32
         )
-        y_true = scaled_data[i]
-        y_pred = model(X).item()
-        rmse = math.sqrt((y_true - y_pred) ** 2)
-        rmses.append(rmse)
+        y_true = float(scaled_data[i][0])
+        y_pred = float(model(X).item())
+        rmses.append(abs(y_true - y_pred))
 
     return rmses
 
 # ---------------- UI ----------------
-st.title("📈 Vayu Stock Forecasting Dashboard")
-st.markdown("**Models:** LSTM vs N-BEATS | CPU-Optimized | Streamlit Cloud Ready")
+st.title("📈 Stock Forecasting Dashboard")
+st.markdown("**LSTM vs N-BEATS | CPU | Streamlit Cloud Ready**")
 
 ticker = st.text_input("Stock Ticker", "AAPL")
 period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
@@ -123,17 +121,16 @@ if st.button("Run Prediction"):
 
     X, y, scaler, scaled = prepare_sequences(df.values)
 
-    # -------- LSTM --------
-    lstm_preds = lstm(X).detach().numpy()
+    lstm_preds = lstm(X).detach().numpy().flatten()
+    nbeats_preds = nbeats(X).detach().numpy().flatten()
+
     lstm_rmse = math.sqrt(mean_squared_error(y, lstm_preds))
-    lstm_price = scaler.inverse_transform([[lstm_preds[-1][0]]])[0][0]
-
-    # -------- N-BEATS --------
-    nbeats_preds = nbeats(X).detach().numpy()
     nbeats_rmse = math.sqrt(mean_squared_error(y, nbeats_preds))
-    nbeats_price = scaler.inverse_transform([[nbeats_preds[-1][0]]])[0][0]
 
-    last_close = df["Close"].iloc[-1]
+    lstm_price = float(scaler.inverse_transform([[lstm_preds[-1]]])[0][0])
+    nbeats_price = float(scaler.inverse_transform([[nbeats_preds[-1]]])[0][0])
+
+    last_close = float(df["Close"].iloc[-1])
 
     st.subheader("📊 Prediction Results")
 
@@ -151,25 +148,21 @@ if st.button("Run Prediction"):
         st.subheader("📉 RMSE Comparison")
         st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
 
-    # -------- Actual vs Predicted Overlay --------
+    # -------- Actual vs Predicted --------
     st.subheader("📈 Actual vs Predicted (LSTM)")
-    actual = scaler.inverse_transform(y.reshape(-1, 1)).flatten()
-    predicted = scaler.inverse_transform(lstm_preds).flatten()
-
     overlay_df = pd.DataFrame({
-        "Actual": actual[-100:],
-        "Predicted": predicted[-100:]
+        "Actual": scaler.inverse_transform(y.reshape(-1, 1)).flatten()[-100:],
+        "Predicted": scaler.inverse_transform(lstm_preds.reshape(-1, 1)).flatten()[-100:]
     })
-
     st.line_chart(overlay_df)
 
     # -------- Rolling Forecast --------
-    st.subheader("🔄 Rolling Forecast (Walk-Forward)")
+    st.subheader("🔄 Rolling Forecast")
     rolling_preds = rolling_forecast(lstm, df.values, scaler, forecast_days)
     st.line_chart(rolling_preds)
 
-    # -------- Walk-Forward RMSE Trend --------
-    st.subheader("📊 Walk-Forward RMSE Trend (LSTM)")
+    # -------- Walk-forward RMSE --------
+    st.subheader("📊 Walk-Forward RMSE Trend")
     rmse_trend = walk_forward_rmse(lstm, scaled)
     st.line_chart(rmse_trend)
 
@@ -178,6 +171,6 @@ st.markdown("""
 ---
 ⚠️ **Disclaimer**  
 This application is for **educational and research purposes only**.  
-It does **not constitute financial advice, investment recommendations, or trading signals**.  
-Stock market investments are subject to market risks. Please consult a qualified financial advisor before making any investment decisions.
+It does **not constitute financial advice or trading recommendations**.  
+Stock market investments are subject to market risks.
 """)
