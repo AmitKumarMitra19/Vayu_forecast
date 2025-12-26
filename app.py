@@ -53,7 +53,7 @@ lstm, nbeats = load_models()
 
 # ---------------- FUNCTIONS ----------------
 def fetch_data(ticker, period):
-    data = yf.download(ticker, period=period)
+    data = yf.download(ticker, period=period, progress=False)
     if data.empty or len(data) < LOOKBACK + 5:
         return None
     return data[["Close"]]
@@ -65,7 +65,7 @@ def prepare_sequences(data):
     X, y = [], []
     for i in range(len(scaled) - LOOKBACK):
         X.append(scaled[i:i+LOOKBACK])
-        y.append(scaled[i+LOOKBACK][0])  # force scalar
+        y.append(float(scaled[i+LOOKBACK][0]))
 
     return (
         torch.tensor(np.array(X), dtype=torch.float32),
@@ -82,7 +82,7 @@ def rolling_forecast(model, raw_data, scaler, steps):
         seq = temp[-LOOKBACK:]
         seq_scaled = scaler.transform(seq)
         X = torch.tensor(seq_scaled).float().unsqueeze(0)
-        pred = float(model(X).item())  # force scalar
+        pred = float(model(X).item())
         preds.append(pred)
         temp = np.vstack([temp, [[pred]]])
 
@@ -103,16 +103,17 @@ def walk_forward_rmse(model, scaled_data):
     return rmses
 
 # ---------------- UI ----------------
-st.title("📈 Stock Forecasting Dashboard")
-st.markdown("**LSTM vs N-BEATS | CPU | Streamlit Cloud Ready**")
+st.title("📈 Vayu Stock Forecasting Dashboard")
+st.markdown("**LSTM & N-BEATS | CPU-Optimized | Streamlit Cloud Ready**")
 
+st.subheader("🔹 Single Stock Analysis")
 ticker = st.text_input("Stock Ticker", "AAPL")
 period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
 model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS", "Compare Both"])
 forecast_days = st.slider("Rolling Forecast Days", 5, 30, 10)
 
-# ---------------- RUN ----------------
-if st.button("Run Prediction"):
+# ---------------- SINGLE STOCK RUN ----------------
+if st.button("Run Single Stock Prediction"):
     df = fetch_data(ticker, period)
 
     if df is None:
@@ -148,7 +149,6 @@ if st.button("Run Prediction"):
         st.subheader("📉 RMSE Comparison")
         st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
 
-    # -------- Actual vs Predicted --------
     st.subheader("📈 Actual vs Predicted (LSTM)")
     overlay_df = pd.DataFrame({
         "Actual": scaler.inverse_transform(y.reshape(-1, 1)).flatten()[-100:],
@@ -156,21 +156,59 @@ if st.button("Run Prediction"):
     })
     st.line_chart(overlay_df)
 
-    # -------- Rolling Forecast --------
     st.subheader("🔄 Rolling Forecast")
     rolling_preds = rolling_forecast(lstm, df.values, scaler, forecast_days)
     st.line_chart(rolling_preds)
 
-    # -------- Walk-forward RMSE --------
     st.subheader("📊 Walk-Forward RMSE Trend")
     rmse_trend = walk_forward_rmse(lstm, scaled)
     st.line_chart(rmse_trend)
+
+# ---------------- MULTI-STOCK COMPARISON ----------------
+st.markdown("---")
+st.subheader("📊 Multi-Stock Comparison (LSTM)")
+
+tickers_input = st.text_input(
+    "Enter multiple tickers (comma-separated)",
+    "AAPL,MSFT,GOOGL"
+)
+
+if st.button("Compare Stocks"):
+    tickers = [t.strip().upper() for t in tickers_input.split(",")]
+    results = []
+
+    for t in tickers:
+        df = fetch_data(t, period)
+        if df is None:
+            continue
+
+        X, y, scaler, _ = prepare_sequences(df.values)
+        preds = lstm(X).detach().numpy().flatten()
+
+        rmse = math.sqrt(mean_squared_error(y, preds))
+        next_price = float(scaler.inverse_transform([[preds[-1]]])[0][0])
+        last_close = float(df["Close"].iloc[-1])
+
+        results.append({
+            "Stock": t,
+            "Last Close": round(last_close, 2),
+            "Predicted Close": round(next_price, 2),
+            "Direction": "UP 📈" if next_price > last_close else "DOWN 📉",
+            "RMSE": round(rmse, 4)
+        })
+
+    if results:
+        result_df = pd.DataFrame(results)
+        st.dataframe(result_df)
+        st.bar_chart(result_df.set_index("Stock")["RMSE"])
+    else:
+        st.warning("No valid data found for the selected stocks.")
 
 # ---------------- DISCLAIMER ----------------
 st.markdown("""
 ---
 ⚠️ **Disclaimer**  
 This application is for **educational and research purposes only**.  
-It does **not constitute financial advice or trading recommendations**.  
+It does **not constitute financial advice, investment recommendations, or trading signals**.  
 Stock market investments are subject to market risks.
 """)
