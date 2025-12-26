@@ -1,3 +1,4 @@
+from datetime import datetime
 import streamlit as st
 import torch
 import numpy as np
@@ -121,11 +122,32 @@ if st.button("Run Side-by-Side Comparison"):
         st.metric("Direction", "UP 📈" if p2 > last2 else "DOWN 📉")
         st.metric("RMSE", f"{rmse2:.4f}")
 
-# ---------------- DISCLAIMER ----------------
-st.markdown("""
----
-⚠️ **Disclaimer**  
-This application is for **educational and research purposes only**.  
-It does **not constitute financial advice, investment recommendations, or trading signals**.  
+# ---------------- FIXED FOOTER ----------------
+current_year = datetime.now().year
+
+footer = f"""
+<style>
+.footer {{
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    background-color: #f9f9f9;
+    color: #6c757d;
+    text-align: center;
+    font-size: 12px;
+    padding: 10px;
+    border-top: 1px solid #e0e0e0;
+    z-index: 100;
+}}
+</style>
+
+<div class="footer">
+© {current_year} Amit Kumar Mitra. All rights reserved.<br>
+This application is for educational and research purposes only and does not constitute financial advice or investment recommendations.
 Stock market investments are subject to market risks.
-""")
+</div>
+"""
+
+st.markdown(footer, unsafe_allow_html=True)
+
