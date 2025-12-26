@@ -2,10 +2,10 @@ import streamlit as st
 import torch
 import numpy as np
 import yfinance as yf
-import joblib
 import torch.nn as nn
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_squared_error
+import pandas as pd
 import math
 
 # ---------------- CONFIG ----------------
@@ -51,64 +51,133 @@ def load_models():
 
 lstm, nbeats = load_models()
 
-# ---------------- UI ----------------
-st.title("📈 Stock Price Prediction Dashboard")
-st.markdown("**Models:** LSTM vs N-BEATS (CPU optimized)")
-
-ticker = st.text_input("Stock Ticker", "AAPL")
-period = st.selectbox("Select Time Range", ["3mo", "6mo", "1y"])
-model_choice = st.radio("Select Model", ["LSTM", "N-BEATS", "Compare Both"])
-
-# ---------------- FETCH DATA ----------------
+# ---------------- FUNCTIONS ----------------
 def fetch_data(ticker, period):
     data = yf.download(ticker, period=period)
     if data.empty or len(data) < LOOKBACK + 5:
         return None
     return data[["Close"]]
 
-# ---------------- PREDICTION ----------------
-if st.button("Predict"):
-    df = fetch_data(ticker, period)
-
-    if df is None:
-        st.error("Not enough data. Try a longer time range or a different stock.")
-        st.stop()
-
+def prepare_sequences(data):
     scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(df)
+    scaled = scaler.fit_transform(data)
 
     X, y = [], []
     for i in range(len(scaled) - LOOKBACK):
         X.append(scaled[i:i+LOOKBACK])
         y.append(scaled[i+LOOKBACK])
 
-    X = torch.tensor(np.array(X), dtype=torch.float32)
-    y = np.array(y)
+    return (
+        torch.tensor(np.array(X), dtype=torch.float32),
+        np.array(y),
+        scaler,
+        scaled
+    )
 
-    # ---------------- LSTM ----------------
+def rolling_forecast(model, raw_data, scaler, steps):
+    model.eval()
+    preds = []
+    temp = raw_data.copy()
+
+    for _ in range(steps):
+        seq = temp[-LOOKBACK:]
+        seq_scaled = scaler.transform(seq)
+        X = torch.tensor(seq_scaled).float().unsqueeze(0)
+        pred = model(X).item()
+        preds.append(pred)
+        temp = np.vstack([temp, [[pred]]])
+
+    return scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten()
+
+def walk_forward_rmse(model, scaled_data):
+    rmses = []
+
+    for i in range(LOOKBACK, len(scaled_data)):
+        X = torch.tensor(
+            scaled_data[i-LOOKBACK:i].reshape(1, LOOKBACK, 1),
+            dtype=torch.float32
+        )
+        y_true = scaled_data[i]
+        y_pred = model(X).item()
+        rmse = math.sqrt((y_true - y_pred) ** 2)
+        rmses.append(rmse)
+
+    return rmses
+
+# ---------------- UI ----------------
+st.title("📈 Vayu Stock Forecasting Dashboard")
+st.markdown("**Models:** LSTM vs N-BEATS | CPU-Optimized | Streamlit Cloud Ready")
+
+ticker = st.text_input("Stock Ticker", "AAPL")
+period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
+model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS", "Compare Both"])
+forecast_days = st.slider("Rolling Forecast Days", 5, 30, 10)
+
+# ---------------- RUN ----------------
+if st.button("Run Prediction"):
+    df = fetch_data(ticker, period)
+
+    if df is None:
+        st.error("Not enough data. Try a longer time range or another stock.")
+        st.stop()
+
+    X, y, scaler, scaled = prepare_sequences(df.values)
+
+    # -------- LSTM --------
     lstm_preds = lstm(X).detach().numpy()
     lstm_rmse = math.sqrt(mean_squared_error(y, lstm_preds))
     lstm_price = scaler.inverse_transform([[lstm_preds[-1][0]]])[0][0]
 
-    # ---------------- N-BEATS ----------------
+    # -------- N-BEATS --------
     nbeats_preds = nbeats(X).detach().numpy()
     nbeats_rmse = math.sqrt(mean_squared_error(y, nbeats_preds))
     nbeats_price = scaler.inverse_transform([[nbeats_preds[-1][0]]])[0][0]
 
-    # ---------------- OUTPUT ----------------
+    last_close = df["Close"].iloc[-1]
+
     st.subheader("📊 Prediction Results")
 
     if model_choice in ["LSTM", "Compare Both"]:
-        st.success(f"LSTM Next Close Prediction: ${lstm_price:.2f}")
+        st.success(f"LSTM Next Close: ${lstm_price:.2f}")
         st.write(f"LSTM RMSE: {lstm_rmse:.4f}")
+        st.write("Direction:", "UP 📈" if lstm_price > last_close else "DOWN 📉")
 
     if model_choice in ["N-BEATS", "Compare Both"]:
-        st.success(f"N-BEATS Next Close Prediction: ${nbeats_price:.2f}")
+        st.success(f"N-BEATS Next Close: ${nbeats_price:.2f}")
         st.write(f"N-BEATS RMSE: {nbeats_rmse:.4f}")
+        st.write("Direction:", "UP 📈" if nbeats_price > last_close else "DOWN 📉")
 
     if model_choice == "Compare Both":
         st.subheader("📉 RMSE Comparison")
-        st.bar_chart({
-            "LSTM": lstm_rmse,
-            "N-BEATS": nbeats_rmse
-        })
+        st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
+
+    # -------- Actual vs Predicted Overlay --------
+    st.subheader("📈 Actual vs Predicted (LSTM)")
+    actual = scaler.inverse_transform(y.reshape(-1, 1)).flatten()
+    predicted = scaler.inverse_transform(lstm_preds).flatten()
+
+    overlay_df = pd.DataFrame({
+        "Actual": actual[-100:],
+        "Predicted": predicted[-100:]
+    })
+
+    st.line_chart(overlay_df)
+
+    # -------- Rolling Forecast --------
+    st.subheader("🔄 Rolling Forecast (Walk-Forward)")
+    rolling_preds = rolling_forecast(lstm, df.values, scaler, forecast_days)
+    st.line_chart(rolling_preds)
+
+    # -------- Walk-Forward RMSE Trend --------
+    st.subheader("📊 Walk-Forward RMSE Trend (LSTM)")
+    rmse_trend = walk_forward_rmse(lstm, scaled)
+    st.line_chart(rmse_trend)
+
+# ---------------- DISCLAIMER ----------------
+st.markdown("""
+---
+⚠️ **Disclaimer**  
+This application is for **educational and research purposes only**.  
+It does **not constitute financial advice, investment recommendations, or trading signals**.  
+Stock market investments are subject to market risks. Please consult a qualified financial advisor before making any investment decisions.
+""")
