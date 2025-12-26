@@ -90,7 +90,6 @@ def rolling_forecast(model, raw_data, scaler, steps):
 
 def walk_forward_rmse(model, scaled_data):
     rmses = []
-
     for i in range(LOOKBACK, len(scaled_data)):
         X = torch.tensor(
             scaled_data[i-LOOKBACK:i].reshape(1, LOOKBACK, 1),
@@ -99,110 +98,116 @@ def walk_forward_rmse(model, scaled_data):
         y_true = float(scaled_data[i][0])
         y_pred = float(model(X).item())
         rmses.append(abs(y_true - y_pred))
-
     return rmses
 
 # ---------------- UI ----------------
-st.title("📈 Vayu Stock Forecasting Dashboard")
-st.markdown("**LSTM & N-BEATS | CPU-Optimized | Streamlit Cloud Ready**")
+st.title("📈 Stock Forecasting Dashboard")
 
-st.subheader("🔹 Single Stock Analysis")
-ticker = st.text_input("Stock Ticker", "AAPL")
-period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
-model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS", "Compare Both"])
-forecast_days = st.slider("Rolling Forecast Days", 5, 30, 10)
-
-# ---------------- SINGLE STOCK RUN ----------------
-if st.button("Run Single Stock Prediction"):
-    df = fetch_data(ticker, period)
-
-    if df is None:
-        st.error("Not enough data. Try a longer time range or another stock.")
-        st.stop()
-
-    X, y, scaler, scaled = prepare_sequences(df.values)
-
-    lstm_preds = lstm(X).detach().numpy().flatten()
-    nbeats_preds = nbeats(X).detach().numpy().flatten()
-
-    lstm_rmse = math.sqrt(mean_squared_error(y, lstm_preds))
-    nbeats_rmse = math.sqrt(mean_squared_error(y, nbeats_preds))
-
-    lstm_price = float(scaler.inverse_transform([[lstm_preds[-1]]])[0][0])
-    nbeats_price = float(scaler.inverse_transform([[nbeats_preds[-1]]])[0][0])
-
-    last_close = float(df["Close"].iloc[-1])
-
-    st.subheader("📊 Prediction Results")
-
-    if model_choice in ["LSTM", "Compare Both"]:
-        st.success(f"LSTM Next Close: ${lstm_price:.2f}")
-        st.write(f"LSTM RMSE: {lstm_rmse:.4f}")
-        st.write("Direction:", "UP 📈" if lstm_price > last_close else "DOWN 📉")
-
-    if model_choice in ["N-BEATS", "Compare Both"]:
-        st.success(f"N-BEATS Next Close: ${nbeats_price:.2f}")
-        st.write(f"N-BEATS RMSE: {nbeats_rmse:.4f}")
-        st.write("Direction:", "UP 📈" if nbeats_price > last_close else "DOWN 📉")
-
-    if model_choice == "Compare Both":
-        st.subheader("📉 RMSE Comparison")
-        st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
-
-    st.subheader("📈 Actual vs Predicted (LSTM)")
-    overlay_df = pd.DataFrame({
-        "Actual": scaler.inverse_transform(y.reshape(-1, 1)).flatten()[-100:],
-        "Predicted": scaler.inverse_transform(lstm_preds.reshape(-1, 1)).flatten()[-100:]
-    })
-    st.line_chart(overlay_df)
-
-    st.subheader("🔄 Rolling Forecast")
-    rolling_preds = rolling_forecast(lstm, df.values, scaler, forecast_days)
-    st.line_chart(rolling_preds)
-
-    st.subheader("📊 Walk-Forward RMSE Trend")
-    rmse_trend = walk_forward_rmse(lstm, scaled)
-    st.line_chart(rmse_trend)
-
-# ---------------- MULTI-STOCK COMPARISON ----------------
-st.markdown("---")
-st.subheader("📊 Multi-Stock Comparison (LSTM)")
-
-tickers_input = st.text_input(
-    "Enter multiple tickers (comma-separated)",
-    "AAPL,MSFT,GOOGL"
+app_mode = st.radio(
+    "Select Analysis Mode",
+    ["Single Stock Analysis", "📊 Multi-Stock Comparison"]
 )
 
-if st.button("Compare Stocks"):
-    tickers = [t.strip().upper() for t in tickers_input.split(",")]
-    results = []
+period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
 
-    for t in tickers:
-        df = fetch_data(t, period)
+# =========================================================
+# SINGLE STOCK MODE
+# =========================================================
+if app_mode == "Single Stock Analysis":
+    st.subheader("🔹 Single Stock Analysis")
+
+    ticker = st.text_input("Stock Ticker", "AAPL")
+    model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS", "Compare Both"])
+    forecast_days = st.slider("Rolling Forecast Days", 5, 30, 10)
+
+    if st.button("Run Single Stock Prediction"):
+        df = fetch_data(ticker, period)
         if df is None:
-            continue
+            st.error("Not enough data. Try a longer time range.")
+            st.stop()
 
-        X, y, scaler, _ = prepare_sequences(df.values)
-        preds = lstm(X).detach().numpy().flatten()
+        X, y, scaler, scaled = prepare_sequences(df.values)
 
-        rmse = math.sqrt(mean_squared_error(y, preds))
-        next_price = float(scaler.inverse_transform([[preds[-1]]])[0][0])
+        lstm_preds = lstm(X).detach().numpy().flatten()
+        nbeats_preds = nbeats(X).detach().numpy().flatten()
+
+        lstm_rmse = math.sqrt(mean_squared_error(y, lstm_preds))
+        nbeats_rmse = math.sqrt(mean_squared_error(y, nbeats_preds))
+
+        lstm_price = float(scaler.inverse_transform([[lstm_preds[-1]]])[0][0])
+        nbeats_price = float(scaler.inverse_transform([[nbeats_preds[-1]]])[0][0])
+
         last_close = float(df["Close"].iloc[-1])
 
-        results.append({
-            "Stock": t,
-            "Last Close": round(last_close, 2),
-            "Predicted Close": round(next_price, 2),
-            "Direction": "UP 📈" if next_price > last_close else "DOWN 📉",
-            "RMSE": round(rmse, 4)
-        })
+        st.subheader("📊 Prediction Results")
 
-    if results:
-        result_df = pd.DataFrame(results)
-        st.dataframe(result_df)
-        st.bar_chart(result_df.set_index("Stock")["RMSE"])
-    else:
-        st.warning("No valid data found for the selected stocks.")
+        if model_choice in ["LSTM", "Compare Both"]:
+            st.success(f"LSTM Next Close: ${lstm_price:.2f}")
+            st.write(f"RMSE: {lstm_rmse:.4f}")
+            st.write("Direction:", "UP 📈" if lstm_price > last_close else "DOWN 📉")
+
+        if model_choice in ["N-BEATS", "Compare Both"]:
+            st.success(f"N-BEATS Next Close: ${nbeats_price:.2f}")
+            st.write(f"RMSE: {nbeats_rmse:.4f}")
+            st.write("Direction:", "UP 📈" if nbeats_price > last_close else "DOWN 📉")
+
+        if model_choice == "Compare Both":
+            st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
+
+        st.subheader("📈 Actual vs Predicted (LSTM)")
+        overlay_df = pd.DataFrame({
+            "Actual": scaler.inverse_transform(y.reshape(-1, 1)).flatten()[-100:],
+            "Predicted": scaler.inverse_transform(lstm_preds.reshape(-1, 1)).flatten()[-100:]
+        })
+        st.line_chart(overlay_df)
+
+        st.subheader("🔄 Rolling Forecast")
+        st.line_chart(rolling_forecast(lstm, df.values, scaler, forecast_days))
+
+        st.subheader("📊 Walk-Forward RMSE Trend")
+        st.line_chart(walk_forward_rmse(lstm, scaled))
+
+# =========================================================
+# MULTI STOCK MODE
+# =========================================================
+else:
+    st.subheader("📊 Multi-Stock Comparison (LSTM)")
+
+    tickers_input = st.text_input(
+        "Enter stock tickers (comma-separated)",
+        "AAPL,MSFT,GOOGL,AMZN"
+    )
+
+    if st.button("Compare Stocks"):
+        tickers = [t.strip().upper() for t in tickers_input.split(",")]
+        results = []
+
+        for t in tickers:
+            df = fetch_data(t, period)
+            if df is None:
+                continue
+
+            X, y, scaler, _ = prepare_sequences(df.values)
+            preds = lstm(X).detach().numpy().flatten()
+
+            rmse = math.sqrt(mean_squared_error(y, preds))
+            next_price = float(scaler.inverse_transform([[preds[-1]]])[0][0])
+            last_close = float(df["Close"].iloc[-1])
+
+            results.append({
+                "Stock": t,
+                "Last Close": round(last_close, 2),
+                "Predicted Close": round(next_price, 2),
+                "Direction": "UP 📈" if next_price > last_close else "DOWN 📉",
+                "RMSE": round(rmse, 4)
+            })
+
+        if results:
+            result_df = pd.DataFrame(results)
+            st.dataframe(result_df)
+            st.bar_chart(result_df.set_index("Stock")["RMSE"])
+        else:
+            st.warning("No valid data found.")
 
 # ---------------- DISCLAIMER ----------------
 st.markdown("""
