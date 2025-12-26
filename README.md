@@ -97,12 +97,6 @@ Stock market investments are subject to market risks.
 
 ---
 
-## Recruiter Summary
-
-Built and deployed a stock forecasting dashboard using LSTM and N-BEATS deep learning models with live market data, enabling side-by-side stock comparison, next-day price prediction, direction inference, and RMSE-based evaluation on Streamlit Cloud.
-
----
-
 ## Future Improvements
 
 - Confidence intervals for predictions
