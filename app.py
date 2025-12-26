@@ -58,156 +58,68 @@ def fetch_data(ticker, period):
         return None
     return data[["Close"]]
 
-def prepare_sequences(data):
+def run_model(model, df):
     scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(data)
+    scaled = scaler.fit_transform(df)
 
     X, y = [], []
     for i in range(len(scaled) - LOOKBACK):
         X.append(scaled[i:i+LOOKBACK])
         y.append(float(scaled[i+LOOKBACK][0]))
 
-    return (
-        torch.tensor(np.array(X), dtype=torch.float32),
-        np.array(y, dtype=float),
-        scaler,
-        scaled
-    )
+    X = torch.tensor(np.array(X), dtype=torch.float32)
+    y = np.array(y)
 
-def rolling_forecast(model, raw_data, scaler, steps):
-    preds = []
-    temp = raw_data.copy()
+    preds = model(X).detach().numpy().flatten()
+    rmse = math.sqrt(mean_squared_error(y, preds))
+    next_price = float(scaler.inverse_transform([[preds[-1]]])[0][0])
+    last_close = float(df.iloc[-1][0])
 
-    for _ in range(steps):
-        seq = temp[-LOOKBACK:]
-        seq_scaled = scaler.transform(seq)
-        X = torch.tensor(seq_scaled).float().unsqueeze(0)
-        pred = float(model(X).item())
-        preds.append(pred)
-        temp = np.vstack([temp, [[pred]]])
-
-    return scaler.inverse_transform(np.array(preds).reshape(-1, 1)).flatten()
-
-def walk_forward_rmse(model, scaled_data):
-    rmses = []
-    for i in range(LOOKBACK, len(scaled_data)):
-        X = torch.tensor(
-            scaled_data[i-LOOKBACK:i].reshape(1, LOOKBACK, 1),
-            dtype=torch.float32
-        )
-        y_true = float(scaled_data[i][0])
-        y_pred = float(model(X).item())
-        rmses.append(abs(y_true - y_pred))
-    return rmses
+    return next_price, rmse, last_close
 
 # ---------------- UI ----------------
 st.title("📈 Stock Forecasting Dashboard")
+st.markdown("**LSTM vs N-BEATS | CPU | Streamlit Cloud Ready**")
 
-app_mode = st.radio(
-    "Select Analysis Mode",
-    ["Single Stock Analysis", "📊 Multi-Stock Comparison"]
-)
+st.subheader("📊 Side-by-Side Stock Comparison (Up to 2 Stocks)")
+
+col1, col2 = st.columns(2)
+with col1:
+    ticker_1 = st.text_input("Stock A Ticker", "AAPL")
+with col2:
+    ticker_2 = st.text_input("Stock B Ticker", "MSFT")
 
 period = st.selectbox("Time Range", ["3mo", "6mo", "1y"])
+model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS"])
 
-# =========================================================
-# SINGLE STOCK MODE
-# =========================================================
-if app_mode == "Single Stock Analysis":
-    st.subheader("🔹 Single Stock Analysis")
+if st.button("Run Side-by-Side Comparison"):
+    model = lstm if model_choice == "LSTM" else nbeats
 
-    ticker = st.text_input("Stock Ticker", "AAPL")
-    model_choice = st.radio("Model Selection", ["LSTM", "N-BEATS", "Compare Both"])
-    forecast_days = st.slider("Rolling Forecast Days", 5, 30, 10)
+    df1 = fetch_data(ticker_1, period)
+    df2 = fetch_data(ticker_2, period)
 
-    if st.button("Run Single Stock Prediction"):
-        df = fetch_data(ticker, period)
-        if df is None:
-            st.error("Not enough data. Try a longer time range.")
-            st.stop()
+    if df1 is None or df2 is None:
+        st.error("One or both stocks do not have enough data.")
+        st.stop()
 
-        X, y, scaler, scaled = prepare_sequences(df.values)
+    p1, rmse1, last1 = run_model(model, df1)
+    p2, rmse2, last2 = run_model(model, df2)
 
-        lstm_preds = lstm(X).detach().numpy().flatten()
-        nbeats_preds = nbeats(X).detach().numpy().flatten()
+    col1, col2 = st.columns(2)
 
-        lstm_rmse = math.sqrt(mean_squared_error(y, lstm_preds))
-        nbeats_rmse = math.sqrt(mean_squared_error(y, nbeats_preds))
+    with col1:
+        st.subheader(f"📌 {ticker_1}")
+        st.metric("Last Close", f"${last1:.2f}")
+        st.metric("Predicted Close", f"${p1:.2f}")
+        st.metric("Direction", "UP 📈" if p1 > last1 else "DOWN 📉")
+        st.metric("RMSE", f"{rmse1:.4f}")
 
-        lstm_price = float(scaler.inverse_transform([[lstm_preds[-1]]])[0][0])
-        nbeats_price = float(scaler.inverse_transform([[nbeats_preds[-1]]])[0][0])
-
-        last_close = float(df["Close"].iloc[-1])
-
-        st.subheader("📊 Prediction Results")
-
-        if model_choice in ["LSTM", "Compare Both"]:
-            st.success(f"LSTM Next Close: ${lstm_price:.2f}")
-            st.write(f"RMSE: {lstm_rmse:.4f}")
-            st.write("Direction:", "UP 📈" if lstm_price > last_close else "DOWN 📉")
-
-        if model_choice in ["N-BEATS", "Compare Both"]:
-            st.success(f"N-BEATS Next Close: ${nbeats_price:.2f}")
-            st.write(f"RMSE: {nbeats_rmse:.4f}")
-            st.write("Direction:", "UP 📈" if nbeats_price > last_close else "DOWN 📉")
-
-        if model_choice == "Compare Both":
-            st.bar_chart({"LSTM": lstm_rmse, "N-BEATS": nbeats_rmse})
-
-        st.subheader("📈 Actual vs Predicted (LSTM)")
-        overlay_df = pd.DataFrame({
-            "Actual": scaler.inverse_transform(y.reshape(-1, 1)).flatten()[-100:],
-            "Predicted": scaler.inverse_transform(lstm_preds.reshape(-1, 1)).flatten()[-100:]
-        })
-        st.line_chart(overlay_df)
-
-        st.subheader("🔄 Rolling Forecast")
-        st.line_chart(rolling_forecast(lstm, df.values, scaler, forecast_days))
-
-        st.subheader("📊 Walk-Forward RMSE Trend")
-        st.line_chart(walk_forward_rmse(lstm, scaled))
-
-# =========================================================
-# MULTI STOCK MODE
-# =========================================================
-else:
-    st.subheader("📊 Multi-Stock Comparison (LSTM)")
-
-    tickers_input = st.text_input(
-        "Enter stock tickers (comma-separated)",
-        "AAPL,MSFT,GOOGL,AMZN"
-    )
-
-    if st.button("Compare Stocks"):
-        tickers = [t.strip().upper() for t in tickers_input.split(",")]
-        results = []
-
-        for t in tickers:
-            df = fetch_data(t, period)
-            if df is None:
-                continue
-
-            X, y, scaler, _ = prepare_sequences(df.values)
-            preds = lstm(X).detach().numpy().flatten()
-
-            rmse = math.sqrt(mean_squared_error(y, preds))
-            next_price = float(scaler.inverse_transform([[preds[-1]]])[0][0])
-            last_close = float(df["Close"].iloc[-1])
-
-            results.append({
-                "Stock": t,
-                "Last Close": round(last_close, 2),
-                "Predicted Close": round(next_price, 2),
-                "Direction": "UP 📈" if next_price > last_close else "DOWN 📉",
-                "RMSE": round(rmse, 4)
-            })
-
-        if results:
-            result_df = pd.DataFrame(results)
-            st.dataframe(result_df)
-            st.bar_chart(result_df.set_index("Stock")["RMSE"])
-        else:
-            st.warning("No valid data found.")
+    with col2:
+        st.subheader(f"📌 {ticker_2}")
+        st.metric("Last Close", f"${last2:.2f}")
+        st.metric("Predicted Close", f"${p2:.2f}")
+        st.metric("Direction", "UP 📈" if p2 > last2 else "DOWN 📉")
+        st.metric("RMSE", f"{rmse2:.4f}")
 
 # ---------------- DISCLAIMER ----------------
 st.markdown("""
